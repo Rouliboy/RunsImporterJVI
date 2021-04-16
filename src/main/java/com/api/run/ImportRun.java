@@ -32,7 +32,8 @@ public class ImportRun {
         saveRun.http_timeout = http_timeout;
         saveRun.url_api = url_api.trim();
         saveRun.csv_file_run = csv_file_run;
-        saveRun.save_All_Run();
+        //saveRun.save_All_Run();
+        saveRun.save_All_Run_JVI();
       } catch (Throwable ex) {
         System.out.print("Import runs error: " + ex.getMessage());
         logger.error("Import runs error: " + ex.getMessage(), ex);

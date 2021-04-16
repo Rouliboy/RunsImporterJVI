@@ -3,6 +3,7 @@ package com.api.run.utils;
 import com.api.run.model.BellTime;
 import com.api.run.model.CsvRunBean;
 import com.api.run.model.Run;
+import com.api.run.model.RunsImportException;
 import com.api.run.model.School;
 import com.api.run.model.School_Data;
 import com.api.run.model.Schools;
@@ -16,12 +17,17 @@ import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
+import com.opencsv.bean.CsvToBean;
+import com.opencsv.bean.CsvToBeanBuilder;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.log4j.Logger;
 import org.json.JSONArray;
 import org.json.JSONObject;
+import org.springframework.util.CollectionUtils;
 
 public class SaveRuns {
   public String url_gettoken;
@@ -43,6 +49,132 @@ public class SaveRuns {
   static final Logger logger = Logger.getLogger(SaveRuns.class);
   
   Utils m_sevice = new Utils();
+
+  public void save_All_Run_JVI() {
+    try {
+      Token token = retrieveToken();
+      this.dataArea = getDataArea(token);
+      if (StringUtils.isEmpty(this.dataArea)) {
+        throw new RunsImportException("Failed to get data area");
+      }
+      Map<String, Integer> schoolsIdByCode = getAllSchool(token);
+      if (CollectionUtils.isEmpty(schoolsIdByCode)) {
+        throw new RunsImportException("Schools are empty");
+      }
+
+      Task task = createTask(token);
+      if (task == null || task.getId() == null) {
+        throw new RunsImportException("Failed to create task");
+      }
+
+      FileReader reader = new FileReader(this.csv_file_run);
+      CsvToBean<CsvRunBean> csvToBean = new CsvToBeanBuilder(reader)
+              .withType(CsvRunBean.class)
+              .withIgnoreLeadingWhiteSpace(true)
+              .build();
+
+      List<CsvRunBean> runsImportData = csvToBean.parse();
+
+      // Group by runsId
+      Map<String, List<CsvRunBean>> runBeansByRunId = new LinkedHashMap<>();
+      runsImportData.forEach(runBean -> {
+        if (isValid(runBean)) {
+          String runId = runBean.getRunID();
+          List<CsvRunBean> list = runBeansByRunId.getOrDefault(runId, new ArrayList<>());
+          list.add(runBean);
+          runBeansByRunId.put(runId, list);
+        } else {
+          logger.error("Invalid run ignored: "+ runBean);
+        }
+      });
+      //logger.info("runBeansByRunId="+ runBeansByRunId);
+      runBeansByRunId.forEach( (runId, listOfBeans) -> {
+        logger.info("Processing import of run " + runId);
+
+        if (isValidRunBeanSet(listOfBeans, schoolsIdByCode)) {
+
+          List<Schools> schools = new ArrayList<>();
+          listOfBeans.forEach(runBean -> {
+            int schoolId = schoolsIdByCode.get(runBean.getSchool_Code());
+            School_Data schoolData = getOneSchool(token, schoolId);
+            Schools school = buildSchoolFor(schoolData, runBean);
+            schools.add(school);
+          });
+
+          String jsonRunBody = buildRunBody(schools,
+                  runId,
+                  listOfBeans.get(0).getDescription(),
+                  listOfBeans.get(0).getMax_Load(),
+                  listOfBeans.get(0).getMax_Duration(),
+                  listOfBeans.get(0).getComments(),
+                  task);
+          String status = Save_One_Run(jsonRunBody, token);
+          if (!status.equals("")) {
+            logger.info(" Save run error: " + status);
+            System.out.println(" Save run error: " + status);
+          } else {
+            logger.info(" Save run " + runId + " done !");
+            System.out.println(" Save run " + runId + " done !");
+          }
+
+          status = finalizeTask(task, token);
+          if (!status.equals("")) {
+            logger.info("Finalize task error: " + status);
+            System.out.println("Finalize task error: " + status);
+          } else {
+            logger.info("Finalize task done !");
+            System.out.println("Finalize task done !");
+          }
+          status = deleteTask(task, token);
+          if (!status.equals("")) {
+            logger.error("Delete task error: " + status);
+            System.out.println("Delete task error: " + status);
+          } else {
+            logger.info("Delete task done !");
+            System.out.println("Delete task done !");
+          }
+        } else {
+          logger.error("Invalid run set: "+ listOfBeans);
+        }
+      });
+
+    } catch ( RunsImportException e) {
+      logger.error("Import run error: " + e.getMessage());
+    }
+    catch (Exception ex) {
+      logger.error("Unexpected error: " + ex.getMessage(), ex);
+      System.out.println("Import run error: " + ex.toString());
+    }
+  }
+
+  private boolean isValid(CsvRunBean runBean) {
+    return runBean != null && StringUtils.isNotBlank(runBean.getRunID()) && !"null".equals(runBean.getRunID());
+  }
+
+  private boolean isValidRunBeanSet(List<CsvRunBean> runBeanSet, Map<String, Integer> schoolsIdByCode) {
+    boolean valid =  runBeanSet != null && runBeanSet.size() > 0;
+    if (valid) {
+      for (CsvRunBean runBean: runBeanSet) {
+        if (!schoolsIdByCode.containsKey(runBean.getSchool_Code())) {
+          logger.error("Invalid school code: "+ runBean.getSchool_Code());
+          valid = false;
+        }
+      }
+      runBeanSet.forEach(runBean -> {
+
+      });
+    }
+    return valid;
+  }
+
+  private Token retrieveToken() {
+    this.url_gettoken = this.url_api + "/signin";
+    Token token = this.m_sevice.getToken(this.url_gettoken, this.email, this.password, this.scope, this.http_timeout);
+    if (token != null && token.getAccessToken() != "") {
+      return token;
+    }
+    throw new RunsImportException("Failed to retrieve token");
+  }
   
   public void save_All_Run() {
     String status = "";
@@ -173,6 +305,74 @@ public class SaveRuns {
       System.out.println("Import run error:" + ex.toString());
     } 
     return status;
+  }
+
+  private Schools buildSchoolFor(School_Data school_data, CsvRunBean runBean) {
+    School school = new School();
+    school.setAddress(school_data.getAddress());
+    school.setBoardName(school_data.getBoardName());
+    school.setCity(school_data.getCity());
+    school.setCode(school_data.getCode());
+    school.setComments(school_data.getComments());
+    school.setCountry(school_data.getCountry());
+    school.setLevel(school_data.getLevel());
+    school.setGradeId(0);
+    school.setMaxRideTime(school_data.getMaxRideTime());
+    school.setName(school_data.getName());
+    school.setPostalCode(school_data.getPostalCode());
+    school.setBellTimes(school_data.getBellTimes());
+    school.setSchoolDistrict(school_data.getSchoolDistrict());
+    school.setSchoolLocations(school_data.getSchoolLocations());
+    school.setSchoolOperations(school_data.getSchoolOperations());
+    BellTime bellTime = new BellTime();
+    String[] m_bellTime = runBean.getBell_Time().split("-");
+//    if (m_bellTime.length <= 1)
+//      return "belltime bad data";
+
+    // Bus time
+    String busTimeCsv = runBean.getBusTime();
+    String bellTimeCsv = runBean.getBell_Time();
+    if (StringUtils.isBlank(bellTimeCsv) && StringUtils.isBlank(busTimeCsv)) {
+      String message = "belltime or bustime must be specified";
+      logger.error(message);
+      return null;
+    }
+
+    // Find bell time from bell time
+    // FIXME: mettre tout ça dans le validator
+    if (StringUtils.isNotBlank(bellTimeCsv)) {
+      if (m_bellTime.length <= 1)
+        return null;
+      bellTime = findBellTimeFromBellTimeCsv(school_data, m_bellTime);
+    } else if (StringUtils.isNotBlank(busTimeCsv)) {
+      bellTime = findBellTimeFromBusTimeCsv(school_data, busTimeCsv);
+    }
+
+    if (null == bellTime || (bellTime.getId() == 0 && bellTime.getBell() == null))
+      //return "belltime bad data";
+      return null;
+
+    Schools school_bellTime = new Schools();
+    school_bellTime.setSchool(school);
+    school_bellTime.setBellTime(bellTime);
+    return school_bellTime;
+  }
+
+  private String buildRunBody(List<Schools> schools, String runId, String runDescription, int maxLoad, int maxDuration, String comments, Task task) {
+    Run run = new Run();
+    run.setTaskID(task.getId());
+    run.setCode(runId);
+    run.setDynamicFrequency(false);
+    run.setDescription(runDescription);
+    run.setMaxLoad(maxLoad);
+    run.setMaxDuration(maxDuration);
+    run.setComments(comments);
+    run.setSchools(schools);
+    GsonBuilder gsonBuilder = new GsonBuilder();
+    gsonBuilder.serializeNulls();
+    Gson gson = gsonBuilder.create();
+    String json_run = gson.toJson(run);
+    return json_run;
   }
   
   private String build_Run_Body(School_Data school_data, CsvRunBean runBean, Task task) {

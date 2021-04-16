@@ -103,4 +103,17 @@ public class CsvRunBean {
     this.busTime = busTime;
   }
 
+  @Override
+  public String toString() {
+    return "CsvRunBean{" +
+            "RunID='" + RunID + '\'' +
+            ", Description='" + Description + '\'' +
+            ", Max_Load=" + Max_Load +
+            ", Max_Duration=" + Max_Duration +
+            ", Comments='" + Comments + '\'' +
+            ", School_Code='" + School_Code + '\'' +
+            ", Bell_Time='" + Bell_Time + '\'' +
+            ", busTime='" + busTime + '\'' +
+            '}';
+  }
 }
